@@ -1,0 +1,7 @@
+# Local CodeMender findings and state database (persisted via actions/cache in CI)
+.codemender/state.db
+.codemender/reports/
+*.sarif
+*.html
+*.log
+.DS_Store

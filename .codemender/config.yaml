@@ -1,0 +1,22 @@
+# .codemender/config.yaml - CI/CD Headless Execution Profile
+server: {}
+
+scan:
+  extensions:
+    include: [".py", ".java", ".go", ".js", ".ts", ".c", ".cc", ".cpp", ".h", ".rb", ".php"]
+    exclude: [".min.js", ".generated.go", ".pb.go"]
+  max_file_size_kb: 500
+  incremental: true
+
+output:
+  format: table   # "table", "json", "sarif", "md", "html"
+
+tools:
+  confirm_commands: false   # Disables interactive confirmation prompts in headless CI runners
+  confirm_writes: false     # Disables interactive confirmation prompts in headless CI runners
+
+vcs:
+  type: "git"
+
+build:
+  command: "npm test"       # Post-patch regression testing gate executed by cm fix
