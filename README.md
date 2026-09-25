@@ -13,6 +13,8 @@ CodeMender transforms your CI/CD pipeline from a passive static analyzer into an
 ## 🚀 Features
 
 * 🔑 **Zero-Trust Keyless Authentication**: Authenticate GitHub Actions runners to Google Cloud IAM via **Workload Identity Federation (WIF)**—zero static service account JSON keys.
+* ⚡ **Differential AST PR Scans (`--diff`)**: In Pull Requests, automatically restrict scanning to modified files and their 1-hop dependent callers, delivering sub-15-second feedback loops.
+* 🚦 **Quality Hard Gates (`--fail-on`)**: Automatically block PR merges with non-zero exit codes when Critical or High vulnerabilities are detected, while gracefully uploading SARIF alerts.
 * 🛡️ **OASIS SARIF v2.1.0 & Native Step Summaries**: Export standardized SARIF for GitHub Code Scanning and publish Markdown executive summary tables directly to `$GITHUB_STEP_SUMMARY`.
 * 🤖 **Autonomous Remediation & Auto-PR**: Automatically synthesize language-aware security patches (parameterization, input sanitization), verify against regression test suites inside runner sandboxes, and open review Pull Requests.
 * ⚡ **Dual Caching Architecture**: Cache CLI binaries and the SQLite findings database (`~/.codemender/state.db`) to slash incremental scan times from ~45s to **< 10s** and eliminate redundant Gemini API token usage.

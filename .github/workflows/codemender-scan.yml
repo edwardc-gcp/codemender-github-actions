@@ -32,7 +32,8 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Full history is required for PR diff resolution (cm find --diff)
+          fetch-depth: 0
 
       - name: Setup Node.js Runtime
         uses: actions/setup-node@v4
@@ -63,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.9.0
+          key: cm-binary-${{ runner.os }}-v0.10.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
@@ -93,10 +94,16 @@ jobs:
 
       - name: Execute Autonomous Security Scan
         run: |
-          echo "Executing headless vulnerability scan with Gemini 3.8 Flash..."
-          cm find . -y --unrestricted --model gemini-3.8-flash
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "🔍 Pull Request detected: Running differential AST scan against origin/${{ github.base_ref }} (with 1-hop impact analysis)..."
+            cm find --diff="origin/${{ github.base_ref }}" -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH"
+          else
+            echo "🛡️ Push or Scheduled Audit detected: Running full codebase security scan..."
+            cm find . -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH"
+          fi
 
       - name: Export Security Reports & Publish Job Summary
+        if: always()
         run: |
           echo "Generating OASIS SARIF v2.1.0 security compliance report..."
           cm report -f sarif > results.sarif
@@ -111,6 +118,7 @@ jobs:
           head -n 25 results.sarif
 
       - name: Upload SARIF Report to GitHub Code Scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
