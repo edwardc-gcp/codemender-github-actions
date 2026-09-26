@@ -209,7 +209,8 @@ jobs:
               except (ValueError, TypeError):
                   end_line = start_line
 
-              results.append({
+              finding_id = item.get('finding_id') or item.get('id', '')
+              res_obj = {
                   'ruleId': rule_id,
                   'level': sarif_level,
                   'message': {'text': f"{title}: {analysis}"},
@@ -224,8 +225,14 @@ jobs:
                               'endLine': end_line
                           }
                       }
-                  }]
-              })
+                  }],
+                  'properties': {
+                      'finding_id': finding_id
+                  }
+              }
+              if finding_id:
+                  res_obj['correlationGuid'] = finding_id
+              results.append(res_obj)
 
           sarif = {
               '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
