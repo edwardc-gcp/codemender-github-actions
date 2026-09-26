@@ -107,7 +107,7 @@ jobs:
               echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache. Skipping 7-15 minute full scan!"
             fi
             echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
-            cm fix "${SPECIFIC_TARGET}" -y --unrestricted --model gemini-3.8-flash
+            cm fix "${SPECIFIC_TARGET}" -y --bypass-warning --unrestricted --model gemini-3.8-flash
           else
             echo "🔍 Batch Remediation Mode: Querying open CRITICAL and HIGH findings from CodeMender cache..."
             FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
@@ -128,7 +128,7 @@ jobs:
                 echo "=============================================="
                 echo "  Applying autonomous patch for Finding: ${FID}"
                 echo "=============================================="
-                cm fix "${FID}" -y --unrestricted --model gemini-3.8-flash --no-cache || true
+                cm fix "${FID}" -y --bypass-warning --unrestricted --model gemini-3.8-flash --no-cache || true
               done
             fi
           fi
