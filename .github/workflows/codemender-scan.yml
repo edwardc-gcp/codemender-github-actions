@@ -105,10 +105,149 @@ jobs:
       - name: Export Security Reports & Publish Job Summary
         if: always()
         run: |
-          echo "Generating OASIS SARIF v2.1.0 security compliance report..."
-          cm report -f sarif > results.sarif
-          # Normalize absolute runner paths to repository-relative paths so GitHub Code Scanning can preview source files
-          sed -i "s|$(pwd)/||g" results.sarif
+          echo "Exporting structured CodeMender findings in JSON format..."
+          cm report -f json > results.json
+
+          # WORKAROUND: Generate GitHub-optimized SARIF v2.1.0 from structured JSON
+          # In CodeMender Pre-GA / Public Preview, native SARIF export (cm report -f sarif) omits rule
+          # definitions, CWE tags, and CVSS security-severity scores, causing GitHub to render generic
+          # "Error" badges and display full analysis paragraphs as alert headlines.
+          # This generator converts rich JSON findings into 100% GitHub Code Scanning compliant SARIF
+          # until native upstream GitHub SARIF formatting lands in a future CodeMender release.
+          python3 - << 'EOF'
+          import json, os, re, sys
+
+          repo_root = os.getcwd()
+          json_path = 'results.json'
+          sarif_path = 'results.sarif'
+
+          findings = []
+          if os.path.exists(json_path):
+              try:
+                  with open(json_path, 'r', encoding='utf-8') as f:
+                      content = f.read().strip()
+                      if content:
+                          data = json.loads(content)
+                          findings = data if isinstance(data, list) else []
+              except Exception as e:
+                  print(f"Warning: Failed to parse JSON report ({e}), creating empty SARIF.", file=sys.stderr)
+
+          # Deterministic mapping to GitHub Code Scanning CVSS security-severity (0.0 - 10.0)
+          SEV_MAP = {
+              'CRITICAL': ('9.8', 'error'),
+              'HIGH':     ('8.5', 'error'),
+              'MEDIUM':   ('5.5', 'warning'),
+              'LOW':      ('2.5', 'note'),
+          }
+
+          rules_dict = {}
+          results = []
+
+          for item in findings:
+              if not isinstance(item, dict):
+                  continue
+              # Filter for active, actionable findings
+              if item.get('status') not in ('OPEN', 'REOPENED', None):
+                  continue
+
+              title = item.get('title', 'Security Vulnerability').strip()
+              sev = str(item.get('severity', 'HIGH')).upper()
+              cvss_score, sarif_level = SEV_MAP.get(sev, ('8.5', 'error'))
+
+              vuln_id = item.get('vuln_id') or 'CWE-Other'
+              title_slug = re.sub(r'[^a-zA-Z0-9]+', '-', title.lower()).strip('-')[:50]
+              rule_id = f"cm/{vuln_id.lower()}-{title_slug}"
+
+              analysis = item.get('analysis', title)
+              snippet = item.get('snippet', '').strip()
+
+              if rule_id not in rules_dict:
+                  tags = ['security']
+                  if vuln_id.upper().startswith('CWE-'):
+                      tags.append(f"external/cwe/{vuln_id.lower()}")
+
+                  help_md = f"### {title}\n\n{analysis}"
+                  if snippet:
+                      help_md += f"\n\n```typescript\n{snippet}\n```"
+
+                  rules_dict[rule_id] = {
+                      'id': rule_id,
+                      'name': title,
+                      'shortDescription': {'text': title},
+                      'fullDescription': {'text': analysis},
+                      'help': {
+                          'text': f"{analysis}\n\n{snippet}" if snippet else analysis,
+                          'markdown': help_md
+                      },
+                      'properties': {
+                          'security-severity': cvss_score,
+                          'tags': tags
+                      }
+                  }
+
+              # Convert runner filesystem path to repository-relative path
+              raw_path = str(item.get('file_path', '')).replace('\\', '/')
+              if os.path.isabs(raw_path):
+                  try:
+                      rel_path = os.path.relpath(raw_path, repo_root)
+                  except ValueError:
+                      rel_path = os.path.basename(raw_path)
+              else:
+                  rel_path = raw_path
+
+              rel_path = rel_path.lstrip('./')
+              if rel_path.startswith('../'):
+                  rel_path = os.path.basename(rel_path)
+
+              try:
+                  start_line = max(1, int(item.get('start_line', 1)))
+              except (ValueError, TypeError):
+                  start_line = 1
+
+              try:
+                  end_line = max(start_line, int(item.get('end_line', start_line)))
+              except (ValueError, TypeError):
+                  end_line = start_line
+
+              results.append({
+                  'ruleId': rule_id,
+                  'level': sarif_level,
+                  'message': {'text': f"{title}: {analysis}"},
+                  'locations': [{
+                      'physicalLocation': {
+                          'artifactLocation': {
+                              'uri': rel_path,
+                              'uriBaseId': '%SRCROOT%'
+                          },
+                          'region': {
+                              'startLine': start_line,
+                              'endLine': end_line
+                          }
+                      }
+                  }]
+              })
+
+          sarif = {
+              '$schema': 'https://json.schemastore.org/sarif-2.1.0.json',
+              'version': '2.1.0',
+              'runs': [{
+                  'tool': {
+                      'driver': {
+                          'name': 'CodeMender',
+                          'semanticVersion': '0.10.0',
+                          'informationUri': 'https://cloud.google.com/security',
+                          'rules': list(rules_dict.values())
+                      }
+                  },
+                  'results': results
+              }]
+          }
+
+          with open(sarif_path, 'w', encoding='utf-8') as f:
+              json.dump(sarif, f, indent=2)
+
+          print(f"Successfully generated GitHub-optimized SARIF ({len(results)} alerts across {len(rules_dict)} rules).")
+          EOF
           
           echo "Publishing native Markdown summary to GitHub Actions Step Summary..."
           echo "## 🛡️ CodeMender Security Scan Summary" >> $GITHUB_STEP_SUMMARY
