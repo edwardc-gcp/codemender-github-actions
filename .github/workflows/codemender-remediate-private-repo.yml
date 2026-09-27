@@ -88,6 +88,11 @@ jobs:
 
       - name: Execute Autonomous Patch Remediation (Cache-First)
         run: |
+          # 1. Protect verification and evidence folders from cm fix internal clean
+          mkdir -p .git/info
+          echo ".exploit/" >> .git/info/exclude
+          echo "codemender-evidence/" >> .git/info/exclude
+
           SPECIFIC_TARGET="${{ github.event.inputs.finding_id }}"
           if [ -n "$SPECIFIC_TARGET" ]; then
             echo "🎯 Targeted Remediation: Evaluating Finding ID ${SPECIFIC_TARGET}..."
@@ -97,6 +102,15 @@ jobs:
             else
               echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache."
             fi
+
+            echo "🔬 Generating exploit PoC & verification evidence for Finding: ${SPECIFIC_TARGET}..."
+            cm verify "${SPECIFIC_TARGET}" --no-reset --bypass-warning --unrestricted -y || true
+
+            if [ -d ".exploit" ]; then
+              mkdir -p "codemender-evidence/${SPECIFIC_TARGET}"
+              cp -r .exploit/* "codemender-evidence/${SPECIFIC_TARGET}/" 2>/dev/null || true
+            fi
+
             echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
             cm fix "${SPECIFIC_TARGET}" -y --bypass-warning --unrestricted --model gemini-3.8-flash
           else
@@ -117,6 +131,14 @@ jobs:
             else
               for FID in $FINDING_IDS; do
                 echo "=============================================="
+                echo "  Verifying & Synthesizing PoC for: ${FID}"
+                echo "=============================================="
+                cm verify "${FID}" --no-reset --bypass-warning --unrestricted -y || true
+                if [ -d ".exploit" ]; then
+                  mkdir -p "codemender-evidence/${FID}"
+                  cp -r .exploit/* "codemender-evidence/${FID}/" 2>/dev/null || true
+                fi
+                echo "=============================================="
                 echo "  Applying autonomous patch for Finding: ${FID}"
                 echo "=============================================="
                 cm fix "${FID}" -y --bypass-warning --unrestricted --model gemini-3.8-flash --no-cache || true
@@ -127,12 +149,20 @@ jobs:
       - name: Stage CodeMender Audit Artifacts & Clean Runtime Metadata
         id: git_status
         run: |
-          # 1. Purge internal CodeMender tool tracking metadata
+          # 1. Restore any tracked project .gitignore files in case they were modified
+          git checkout HEAD -- '**/.gitignore' 2>/dev/null || true
+
+          # 2. Purge internal CodeMender runtime tracking files only
           find . -name ".cm_project" -delete 2>/dev/null || true
           find . -name ".cm_*" -delete 2>/dev/null || true
-          find . -mindepth 2 -name ".gitignore" -delete 2>/dev/null || true
+          find . -name ".gitignore" -exec grep -lE "(\.cm_project|PLAN\.md)" {} + 2>/dev/null | xargs rm -f 2>/dev/null || true
 
-          # 2. Force-stage CodeMender's core verification artifacts (PLAN.md, LOG.md, exploit.sh, REPORT.md, poc.*)
+          # 3. Un-exclude and force-stage CodeMender audit evidence
+          sed -i '/codemender-evidence/d' .git/info/exclude 2>/dev/null || true
+          if [ -d "codemender-evidence" ]; then
+            git add -f codemender-evidence/
+          fi
+          # Also stage any PLAN.md, LOG.md, exploit.sh in working tree if created in-place
           find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" \) -exec git add -f {} + 2>/dev/null || true
 
           echo "=== CodeMender VCS Status ==="
@@ -140,7 +170,7 @@ jobs:
           echo "=== CodeMender Generated Patches ==="
           cm report --patches || true
 
-          # 3. Detect code modifications and staged audit artifacts
+          # 4. Detect code modifications and staged audit artifacts
           if [ -n "$(git diff --name-only)" ] || [ -n "$(git diff --staged --name-only)" ] || [ -n "$(git status --porcelain -- ':!.codemender')" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "Modified source files and audit artifacts detected. Preparing automated Pull Request."
@@ -158,7 +188,7 @@ jobs:
           RUN_URL="${REPO_URL}/actions/runs/${{ github.run_id }}"
 
           python3 - << 'PYEOF'
-          import json, os, subprocess
+          import json, os, subprocess, glob
 
           target_id = os.environ.get("TARGET_ID", "").strip()
           repo_url = os.environ.get("REPO_URL", "")
@@ -173,34 +203,39 @@ jobs:
 
           pr_title = "🛡️ [CodeMender] Autonomous Security Remediation"
           summary_rows = []
+          target_fids = []
 
           if target_id:
-              # Targeted finding resolution
               matched = [f for f in findings if f.get("finding_id","").startswith(target_id) or f.get("id","").startswith(target_id)]
               if matched:
                   f = matched[0]
+                  fid = f.get("finding_id", f.get("id", target_id))
+                  target_fids.append(fid)
                   title = f.get("title", f.get("headline", target_id))
                   sev = f.get("severity", "SECURITY").upper()
                   pr_title = f"🛡️ [CodeMender] Fix: {title} ({sev})"
-                  cat = f.get("category", f.get("cwe", "N/A"))
-                  loc = f.get("location", {})
-                  loc_str = f"{loc.get('path', 'Unknown')}:{loc.get('start_line', '')}"
-                  summary_rows.append(f"| `{target_id}` | **{sev}** | `{cat}` | {title} | `{loc_str}` |")
+                  cat = f.get("vuln_id") or f.get("category") or f.get("cwe") or "CWE-Security"
+                  file_path = f.get("file_path") or f.get("location", {}).get("path", "Unknown")
+                  start_line = f.get("start_line") or f.get("location", {}).get("start_line", "")
+                  loc_str = f"`{file_path}:{start_line}`" if start_line else f"`{file_path}`"
+                  summary_rows.append(f"| `{fid[:8]}` | **{sev}** | `{cat}` | {title} | {loc_str} |")
               else:
                   pr_title = f"🛡️ [CodeMender] Fix Finding: {target_id}"
+                  target_fids.append(target_id)
                   summary_rows.append(f"| `{target_id}` | *High/Critical* | `Security` | Targeted Remediation | *Modified in Diff* |")
           else:
-              # Batch findings resolution
               remediated_count = 0
               for f in findings:
                   sev = f.get("severity", "").upper()
                   if sev in ("CRITICAL", "HIGH"):
                       fid = f.get("finding_id", f.get("id", "Unknown"))
+                      target_fids.append(fid)
                       title = f.get("title", f.get("headline", "Security Vulnerability"))
-                      cat = f.get("category", f.get("cwe", "N/A"))
-                      loc = f.get("location", {})
-                      loc_str = f"{loc.get('path', 'Unknown')}:{loc.get('start_line', '')}"
-                      summary_rows.append(f"| `{fid[:8]}` | **{sev}** | `{cat}` | {title} | `{loc_str}` |")
+                      cat = f.get("vuln_id") or f.get("category") or f.get("cwe") or "CWE-Security"
+                      file_path = f.get("file_path") or f.get("location", {}).get("path", "Unknown")
+                      start_line = f.get("start_line") or f.get("location", {}).get("start_line", "")
+                      loc_str = f"`{file_path}:{start_line}`" if start_line else f"`{file_path}`"
+                      summary_rows.append(f"| `{fid[:8]}` | **{sev}** | `{cat}` | {title} | {loc_str} |")
                       remediated_count += 1
               if remediated_count > 0:
                   pr_title = f"🛡️ [CodeMender] Remediate {remediated_count} Critical & High Vulnerabilities"
@@ -210,7 +245,8 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as gh_out:
               gh_out.write(f"pr_title={pr_title}\n")
 
-          with open("pr_body.md", "w") as out:
+          # Write body to /tmp/pr_body.md so it never pollutes the git working tree
+          with open("/tmp/pr_body.md", "w") as out:
               out.write("## 🛡️ CodeMender Autonomous Security Remediation (Private Repo)\n\n")
               out.write("This automated Pull Request was generated by **CodeMender** on the **Gemini Enterprise Agent Platform**.\n\n")
               out.write("### 🔒 Internal Security Review Evidence & Findings Breakdown\n\n")
@@ -222,12 +258,82 @@ jobs:
               else:
                   out.write("| N/A | *Security* | *CWE* | Contextual Code Patch | *See Diff* |\n")
               out.write("\n")
-              out.write("### 📑 CodeMender Verification Artifacts Included in PR\n")
-              out.write("This Pull Request directly commits CodeMender's core audit byproducts for engineering review:\n")
-              out.write("* 📋 **`PLAN.md`**: Target sink analysis, AST taint trace, and remediation plan.\n")
-              out.write("* ⚡ **`exploit.sh`**: Sandbox reproduction PoC script verifying exploitability.\n")
-              out.write("* 📊 **`REPORT.md`**: Root Cause Analysis and before/after verification report.\n")
-              out.write("* 🔬 **`LOG.md`**: Detailed sandbox execution trace and verification logs.\n\n")
+
+              # Embed actual artifact contents directly in PR description!
+              out.write("### 📑 CodeMender Verification Evidence & Artifacts\n\n")
+              out.write("This Pull Request directly commits CodeMender's core audit byproducts under `codemender-evidence/` and embeds their contents below for internal review:\n\n")
+
+              evidence_rendered = False
+              # Collect search directories
+              search_dirs = []
+              for fid in target_fids:
+                  search_dirs.append(f"codemender-evidence/{fid}")
+                  search_dirs.append(f"codemender-evidence/{fid[:8]}")
+              search_dirs.extend(["codemender-evidence", ".exploit"])
+
+              # Deduplicate while preserving order
+              unique_dirs = []
+              for d in search_dirs:
+                  if d not in unique_dirs and os.path.isdir(d):
+                      unique_dirs.append(d)
+
+              for sdir in unique_dirs:
+                  plan_file = os.path.join(sdir, "PLAN.md")
+                  report_file = os.path.join(sdir, "REPORT.md")
+                  exploit_file = None
+                  for cand in ["exploit.sh", "poc.js", "poc.py", "poc.sh"]:
+                      p = os.path.join(sdir, cand)
+                      if os.path.isfile(p):
+                          exploit_file = p
+                          break
+
+                  if os.path.isfile(plan_file):
+                      try:
+                          with open(plan_file, "r") as pf:
+                              plan_content = pf.read().strip()
+                          if plan_content:
+                              out.write("<details open>\n")
+                              out.write(f"<summary>📋 <b>PLAN.md: Attack & Remediation Strategy (<code>{sdir}</code>)</b></summary>\n\n")
+                              out.write(f"{plan_content}\n\n")
+                              out.write("</details>\n\n")
+                              evidence_rendered = True
+                      except Exception:
+                          pass
+
+                  if os.path.isfile(report_file):
+                      try:
+                          with open(report_file, "r") as rf:
+                              report_content = rf.read().strip()
+                          if report_content:
+                              out.write("<details open>\n")
+                              out.write(f"<summary>📊 <b>REPORT.md: Root Cause Analysis & Proof of Exploit (<code>{sdir}</code>)</b></summary>\n\n")
+                              out.write(f"{report_content}\n\n")
+                              out.write("</details>\n\n")
+                              evidence_rendered = True
+                      except Exception:
+                          pass
+
+                  if exploit_file and os.path.isfile(exploit_file):
+                      try:
+                          with open(exploit_file, "r") as ef:
+                              exploit_content = ef.read().strip()
+                          if exploit_content:
+                              out.write("<details>\n")
+                              out.write(f"<summary>⚡ <b>{os.path.basename(exploit_file)}: Sandbox Reproduction PoC Script (<code>{sdir}</code>)</b></summary>\n\n")
+                              out.write("```bash\n")
+                              out.write(f"{exploit_content}\n")
+                              out.write("```\n\n")
+                              out.write("</details>\n\n")
+                              evidence_rendered = True
+                      except Exception:
+                          pass
+
+              if not evidence_rendered:
+                  out.write("* 📋 **`PLAN.md`**: Target sink analysis, AST taint trace, and remediation plan.\n")
+                  out.write("* ⚡ **`exploit.sh`**: Sandbox reproduction PoC script verifying exploitability.\n")
+                  out.write("* 📊 **`REPORT.md`**: Root Cause Analysis and before/after verification report.\n")
+                  out.write("* 🔬 **`LOG.md`**: Detailed sandbox execution trace and verification logs.\n\n")
+
               out.write("### 🔍 Verification Checklist\n")
               out.write("- [x] Code conforms to project language standards\n")
               out.write("- [x] Internal CodeMender runtime metadata excluded from commit\n")
@@ -250,7 +356,7 @@ jobs:
           branch: codemender/auto-remediation-${{ github.run_id }}
           delete-branch: true
           title: ${{ steps.pr_meta.outputs.pr_title }}
-          body-path: pr_body.md
+          body-path: /tmp/pr_body.md
           labels: |
             security
             automated-pr
