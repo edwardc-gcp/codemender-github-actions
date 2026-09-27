@@ -93,10 +93,10 @@ jobs:
           if [ -n "$SPECIFIC_TARGET" ]; then
             echo "🎯 Targeted Remediation: Evaluating Finding ID ${SPECIFIC_TARGET}..."
             if ! cm report -f json 2>/dev/null | jq -e ".[] | select((.finding_id == \"${SPECIFIC_TARGET}\") or (.id == \"${SPECIFIC_TARGET}\") or ((.finding_id // \"\") | startswith(\"${SPECIFIC_TARGET}\")))" >/dev/null 2>&1; then
-              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache. Running fallback discovery (full scan may take 7-15 minutes)..."
+              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache. Running fallback discovery scan..."
               cm find . -y --unrestricted --model gemini-3.8-flash
             else
-              echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache. Skipping 7-15 minute full scan!"
+              echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache."
             fi
             echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
             cm fix "${SPECIFIC_TARGET}" -y --bypass-warning --unrestricted --model gemini-3.8-flash
@@ -105,12 +105,12 @@ jobs:
             FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
 
             if [ -z "$FINDING_IDS" ]; then
-              echo "ℹ️ No prior Critical/High findings found in cache. Running fallback discovery (full scan may take 7-15 minutes)..."
+              echo "ℹ️ No prior Critical/High findings found in cache. Running fallback discovery scan..."
               cm find . -y --unrestricted --model gemini-3.8-flash
               FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
             else
               COUNT=$(echo "$FINDING_IDS" | wc -w | tr -d ' ')
-              echo "⚡ Restored ${COUNT} actionable CRITICAL/HIGH findings from cache. Skipping 7-15 minute full scan!"
+              echo "⚡ Restored ${COUNT} actionable CRITICAL/HIGH findings from cache."
             fi
 
             if [ -z "$FINDING_IDS" ]; then
