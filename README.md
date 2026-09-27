@@ -133,14 +133,25 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
   5. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
   6. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.
 
-### 2. `codemender-remediate.yml` (Autonomous Patch Remediation & Auto-PR)
+### 2. `codemender-remediate.yml` (Autonomous Patch Remediation for Public Repositories)
+* **Target Audience**: Public & Open-Source Repositories (Responsible Disclosure Mode).
 * **Trigger**: Nightly scheduled runs (`0 3 * * *`) or manual dispatch (`workflow_dispatch`) with optional finding ID target.
-* **Key Steps**:
+* **Key Features**:
   1. Clones repository with full Git history (`fetch-depth: 0`).
   2. Queries open vulnerabilities from local findings database (or targets specific finding ID).
   3. Synthesizes security patches via `cm fix <id> -y --bypass-warning --unrestricted --model gemini-3.8-flash`.
-  4. Inspects `cm vcs status` and `cm report --patches` to isolate synthesized code changes.
-  5. Submits automated, review-ready Pull Request (`peter-evans/create-pull-request@v6`) to trigger the repository's native PR CI checks.
+  4. Purges internal `.cm_project` and temporary metadata to ensure zero repository pollution.
+  5. Generates dynamic, context-aware PR title (`🛡️ [CodeMender] Fix: <Title>` or `🛡️ [CodeMender] Fix Finding <ID>`).
+  6. Submits automated, review-ready Pull Request (`peter-evans/create-pull-request@v6`) linking to GitHub Code Scanning SARIF alerts without exposing raw attack vectors publicly.
+
+### 3. `codemender-remediate-private-repo.yml` (Autonomous Patch Remediation for Private Repositories)
+* **Target Audience**: Private Repositories & Enterprise Organizations (Full Audit Evidence Mode).
+* **Trigger**: Nightly scheduled runs (`0 3 * * *`) or manual dispatch (`workflow_dispatch`) with optional finding ID target.
+* **Key Features**:
+  1. Everything in the public remediation workflow, plus:
+  2. **Detailed Context PR Titles**: Displays precise vulnerability headline and severity (e.g. `🛡️ [CodeMender] Fix: SQL Injection in User Authentication Route (CRITICAL)`).
+  3. **Structured Evidence Breakdown Table**: Renders complete Finding ID, Severity, CWE category, Headline, and exact file/line coordinates directly in the PR description.
+  4. **Archived Audit Artifacts**: Archives and uploads the full CodeMender SQLite database (`state.db`), remediation plans, and sandbox logs via `actions/upload-artifact@v4` for internal compliance and security review.
 
 ---
 
