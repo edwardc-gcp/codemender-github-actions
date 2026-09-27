@@ -124,11 +124,14 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
 ## ⚙️ Workflow Breakdown
 
 ### 1. `codemender-scan.yml` (Scan & SARIF Export)
-* **Trigger**: Pull requests and pushes targeting `main` / `master`, plus scheduled weekly audits.
+* **Trigger**: Pull requests and pushes targeting `main` / `master`, scheduled weekly audits, and manual dispatch.
+* **Scan Modes**:
+  * **Standard Fast Mode (Default on PR / Push)**: Scans core application logic (controllers, routes, models) with 1-hop AST impact analysis in 3–5 minutes.
+  * **Deep Scan Mode (`--deep`, CodeMender 0.10.0+)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Automatically enabled during weekly scheduled audits (`cron`) or manually toggled via `workflow_dispatch (deep_scan: true)`.
 * **Key Steps**:
   1. Authenticates via WIF (`google-github-actions/auth@v2`).
   2. Restores CLI binary and findings cache (`state.db`).
-  3. Executes non-interactive scan (`cm find . -y --unrestricted --model gemini-3.8-flash`).
+  3. Executes autonomous scan (`cm find . -y --unrestricted --model gemini-3.8-flash` with optional `--deep`).
   4. Generates and normalizes OASIS SARIF v2.1.0 (`cm report -f sarif`).
   5. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
   6. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.

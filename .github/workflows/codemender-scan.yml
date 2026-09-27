@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [ main, master ]
   schedule:
-    # Run a full scheduled security audit every Monday at 02:00 UTC
+    # Run a full scheduled deep security audit every Monday at 02:00 UTC
     - cron: '0 2 * * 1'
   workflow_dispatch:
+    inputs:
+      deep_scan:
+        description: 'Enable CodeMender Deep Scan (--deep: scans all supported non-doc, non-config files)'
+        required: false
+        default: false
+        type: boolean
 
 # Cancel in-progress runs for the same branch to optimize runner costs
 concurrency:
@@ -94,12 +100,18 @@ jobs:
 
       - name: Execute Autonomous Security Scan
         run: |
+          EXTRA_FLAGS=""
+          if [ "${{ github.event.inputs.deep_scan }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "🔬 Deep scan mode enabled (--deep): scanning all supported non-doc, non-config files..."
+            EXTRA_FLAGS="--deep"
+          fi
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "🔍 Pull Request detected: Running differential AST scan against origin/${{ github.base_ref }} (with 1-hop impact analysis)..."
-            cm find --diff="origin/${{ github.base_ref }}" -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH"
+            cm find --diff="origin/${{ github.base_ref }}" -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH" ${EXTRA_FLAGS}
           else
-            echo "🛡️ Push or Scheduled Audit detected: Running full codebase security scan..."
-            cm find . -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH"
+            echo "🛡️ Push or Scheduled Audit detected: Running codebase security scan..."
+            cm find . -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH" ${EXTRA_FLAGS}
           fi
 
       - name: Export Security Reports & Publish Job Summary
