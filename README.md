@@ -131,7 +131,7 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
   3. Executes non-interactive scan (`cm find . -y --unrestricted --model gemini-3.8-flash`).
   4. Generates and normalizes OASIS SARIF v2.1.0 (`cm report -f sarif`).
   5. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
-  6. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v3`.
+  6. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.
 
 ### 2. `codemender-remediate.yml` (Autonomous Patch Remediation & Auto-PR)
 * **Trigger**: Nightly scheduled runs (`0 3 * * *`) or manual dispatch (`workflow_dispatch`) with optional finding ID target.
