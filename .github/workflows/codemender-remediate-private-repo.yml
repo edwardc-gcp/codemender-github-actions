@@ -59,27 +59,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-cli-linux-amd64-0.10.0
+          key: cm-binary-${{ runner.os }}-v0.10.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
         run: |
-          echo "Fetching CodeMender CLI binary from Google Cloud Storage..."
-          curl -fsSL -o /tmp/cm.zip "https://storage.googleapis.com/codemender-public-binaries/cm-linux-amd64.zip"
-          unzip -q -o /tmp/cm.zip -d ~/.local/bin/
-          chmod +x ~/.local/bin/cm
-          rm -f /tmp/cm.zip
-          cm --version
+          curl -L -o /tmp/cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm:stable:cm-linux-amd64.zip:download?alt=media"
+          unzip -q -o /tmp/cm-linux-amd64.zip -d /tmp/cm-dist
+          chmod +x /tmp/cm-dist/cm
+          mv /tmp/cm-dist/cm "$HOME/.local/bin/cm"
+          "$HOME/.local/bin/cm" --version
 
-      - name: Cache & Restore CodeMender Analysis Database
-        id: cache-db
+      - name: Cache CodeMender Findings & State Database
+        id: cache-cm-state
         uses: actions/cache@v4
         with:
-          path: ~/.codemender/state.db
-          # Key binds to commit hash; restore-keys enables fallback to latest scan cache
-          key: codemender-state-${{ github.sha }}
+          path: |
+            .codemender/
+            ~/.codemender/state.db
+          key: cm-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            codemender-state-
+            cm-state-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Initialize & Verify CodeMender Workspace
         run: |
