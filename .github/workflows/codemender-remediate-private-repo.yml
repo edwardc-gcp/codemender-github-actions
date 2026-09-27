@@ -124,34 +124,26 @@ jobs:
             fi
           fi
 
-      - name: Archive CodeMender Execution Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: codemender-artifacts-${{ github.run_id }}
-          path: |
-            ~/.codemender/state.db
-            ~/.codemender/logs/
-          retention-days: 14
-          if-no-files-found: ignore
-
-      - name: Clean Runtime Metadata & Inspect Working Directory Changes
+      - name: Stage CodeMender Audit Artifacts & Clean Runtime Metadata
         id: git_status
         run: |
-          # Purge internal CodeMender tracking metadata to ensure pristine git diffs
+          # 1. Purge internal CodeMender tool tracking metadata
           find . -name ".cm_project" -delete 2>/dev/null || true
           find . -name ".cm_*" -delete 2>/dev/null || true
           find . -mindepth 2 -name ".gitignore" -delete 2>/dev/null || true
+
+          # 2. Force-stage CodeMender's core verification artifacts (PLAN.md, LOG.md, exploit.sh, REPORT.md, poc.*)
+          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" \) -exec git add -f {} + 2>/dev/null || true
 
           echo "=== CodeMender VCS Status ==="
           cm vcs status
           echo "=== CodeMender Generated Patches ==="
           cm report --patches || true
 
-          # Detect code modifications while ignoring untracked files or metadata directories
-          if [ -n "$(git diff --name-only)" ] || [ -n "$(git status --porcelain -- ':!.codemender')" ]; then
+          # 3. Detect code modifications and staged audit artifacts
+          if [ -n "$(git diff --name-only)" ] || [ -n "$(git diff --staged --name-only)" ] || [ -n "$(git status --porcelain -- ':!.codemender')" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "Modified source files detected. Preparing automated Pull Request."
+            echo "Modified source files and audit artifacts detected. Preparing automated Pull Request."
           else
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "No source code modifications required."
@@ -230,9 +222,12 @@ jobs:
               else:
                   out.write("| N/A | *Security* | *CWE* | Contextual Code Patch | *See Diff* |\n")
               out.write("\n")
-              out.write("### 📦 Full Verification Artifacts Archive\n")
-              out.write(f"* **Download Audit Artifacts**: Complete CodeMender SQLite database (`state.db`), remediation plans, and sandbox logs are archived in [Actions Run #{os.environ.get('GITHUB_RUN_ID', '')} Artifacts]({run_url}).\n")
-              out.write("* **Local Inspection**: Maintainers can download the artifact archive and run `cm report` or `cm vcs status` locally.\n\n")
+              out.write("### 📑 CodeMender Verification Artifacts Included in PR\n")
+              out.write("This Pull Request directly commits CodeMender's core audit byproducts for engineering review:\n")
+              out.write("* 📋 **`PLAN.md`**: Target sink analysis, AST taint trace, and remediation plan.\n")
+              out.write("* ⚡ **`exploit.sh`**: Sandbox reproduction PoC script verifying exploitability.\n")
+              out.write("* 📊 **`REPORT.md`**: Root Cause Analysis and before/after verification report.\n")
+              out.write("* 🔬 **`LOG.md`**: Detailed sandbox execution trace and verification logs.\n\n")
               out.write("### 🔍 Verification Checklist\n")
               out.write("- [x] Code conforms to project language standards\n")
               out.write("- [x] Internal CodeMender runtime metadata excluded from commit\n")

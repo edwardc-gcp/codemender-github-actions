@@ -128,7 +128,8 @@ jobs:
       - name: Clean Runtime Metadata & Inspect Working Directory Changes
         id: git_status
         run: |
-          # Purge internal CodeMender tracking metadata to ensure pristine git diffs
+          # Purge internal CodeMender tracking metadata and sensitive exploit artifacts in public repos
+          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" \) -delete 2>/dev/null || true
           find . -name ".cm_project" -delete 2>/dev/null || true
           find . -name ".cm_*" -delete 2>/dev/null || true
           find . -mindepth 2 -name ".gitignore" -delete 2>/dev/null || true

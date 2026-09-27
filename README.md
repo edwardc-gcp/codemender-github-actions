@@ -151,7 +151,7 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
   1. Everything in the public remediation workflow, plus:
   2. **Detailed Context PR Titles**: Displays precise vulnerability headline and severity (e.g. `🛡️ [CodeMender] Fix: SQL Injection in User Authentication Route (CRITICAL)`).
   3. **Structured Evidence Breakdown Table**: Renders complete Finding ID, Severity, CWE category, Headline, and exact file/line coordinates directly in the PR description.
-  4. **Archived Audit Artifacts**: Archives and uploads the full CodeMender SQLite database (`state.db`), remediation plans, and sandbox logs via `actions/upload-artifact@v4` for internal compliance and security review.
+  4. **Direct PR Inclusion of Verification Artifacts**: Commits CodeMender's core audit artifacts (`PLAN.md`, `LOG.md`, `exploit.sh`, `REPORT.md`) directly into the Pull Request, providing complete visibility into the AI's attack planning, sandbox verification traces, and exploit PoC for internal security review.
 
 ---
 
