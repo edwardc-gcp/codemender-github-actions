@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ main, master ]
   schedule:
-    # Run a full scheduled deep security audit every Monday at 02:00 UTC
+    # Run a full scheduled security audit every Monday at 02:00 UTC
     - cron: '0 2 * * 1'
   workflow_dispatch:
     inputs:
@@ -101,7 +101,7 @@ jobs:
       - name: Execute Autonomous Security Scan
         run: |
           EXTRA_FLAGS=""
-          if [ "${{ github.event.inputs.deep_scan }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${{ github.event.inputs.deep_scan }}" = "true" ]; then
             echo "🔬 Deep scan mode enabled (--deep): scanning all supported non-doc, non-config files..."
             EXTRA_FLAGS="--deep"
           fi

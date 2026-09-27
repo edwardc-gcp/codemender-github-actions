@@ -127,7 +127,7 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
 * **Trigger**: Pull requests and pushes targeting `main` / `master`, scheduled weekly audits, and manual dispatch.
 * **Scan Modes**:
   * **Standard Fast Mode (Default on PR / Push)**: Scans core application logic (controllers, routes, models) with 1-hop AST impact analysis in 3–5 minutes.
-  * **Deep Scan Mode (`--deep`, CodeMender 0.10.0+)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Automatically enabled during weekly scheduled audits (`cron`) or manually toggled via `workflow_dispatch (deep_scan: true)`.
+  * **Deep Scan Mode (`--deep`, CodeMender 0.10.0+)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Manually toggled on-demand via `workflow_dispatch (deep_scan: true)` when comprehensive coverage is required.
 * **Key Steps**:
   1. Authenticates via WIF (`google-github-actions/auth@v2`).
   2. Restores CLI binary and findings cache (`state.db`).
