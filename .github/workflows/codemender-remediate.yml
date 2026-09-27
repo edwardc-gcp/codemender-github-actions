@@ -36,14 +36,6 @@ jobs:
           # Full Git history (fetch-depth: 0) is required for cm vcs status and PR diff generation
           fetch-depth: 0
 
-      - name: Setup Node.js Runtime
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install Application Dependencies
-        run: npm install --legacy-peer-deps || npm install || true
-
       - name: Authenticate to Google Cloud via WIF
         uses: google-github-actions/auth@v2
         with:
@@ -133,11 +125,6 @@ jobs:
             fi
           fi
 
-      - name: Execute Regression Test Suite Verification
-        run: |
-          echo "Verifying synthesized patches against project test suite..."
-          npm test
-
       - name: Inspect Git Working Directory Changes & Generated Patches
         id: git_status
         run: |
@@ -145,8 +132,8 @@ jobs:
           cm vcs status
           echo "=== CodeMender Generated Patches ==="
           cm report --patches || true
-          # Exclude any untracked log or JSON artifact from git status check
-          if [ -n "$(git status --porcelain routes/ lib/ frontend/ src/ 2>/dev/null)" ] || [ -n "$(git diff --name-only)" ]; then
+          # Detect code modifications while ignoring untracked files or metadata directories
+          if [ -n "$(git diff --name-only)" ] || [ -n "$(git status --porcelain -- ':!.codemender')" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "Modified source files detected. Preparing automated Pull Request."
           else

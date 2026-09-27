@@ -137,11 +137,10 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
 * **Trigger**: Nightly scheduled runs (`0 3 * * *`) or manual dispatch (`workflow_dispatch`) with optional finding ID target.
 * **Key Steps**:
   1. Clones repository with full Git history (`fetch-depth: 0`).
-  2. Queries open vulnerabilities from local findings database.
-  3. Synthesizes security patches via `cm fix <id> -y --unrestricted`.
-  4. Executes project regression tests (`npm test` / build gate).
-  5. Inspects `cm vcs status` and `cm report --patches`.
-  6. Submits automated, test-verified Pull Request (`peter-evans/create-pull-request@v6`).
+  2. Queries open vulnerabilities from local findings database (or targets specific finding ID).
+  3. Synthesizes security patches via `cm fix <id> -y --bypass-warning --unrestricted --model gemini-3.8-flash`.
+  4. Inspects `cm vcs status` and `cm report --patches` to isolate synthesized code changes.
+  5. Submits automated, review-ready Pull Request (`peter-evans/create-pull-request@v6`) to trigger the repository's native PR CI checks.
 
 ---
 
