@@ -13,12 +13,12 @@ CodeMender transforms your CI/CD pipeline from a passive static analyzer into an
 ## 🚀 Features
 
 * 🔑 **Zero-Trust Keyless Authentication**: Authenticate GitHub Actions runners to Google Cloud IAM via **Workload Identity Federation (WIF)**—zero static service account JSON keys.
-* ⚡ **Differential AST PR Scans (`--diff`)**: In Pull Requests, automatically restrict scanning to modified files and their 1-hop dependent callers, delivering sub-15-second feedback loops.
+* ⚡ **Differential AST PR Scans (`--diff`)**: In Pull Requests, automatically restrict scanning to modified files and their 1-hop dependent callers (`--diff="origin/$BASE_REF" --diff-workers=16`), delivering sub-15-second feedback loops.
+* 🛡️ **Legacy Debt Noise Suppression**: Findings in untouched code are labeled `[LEGACY / UNTOUCHED]` in SARIF reports for visibility, but never fail the CI merge gate or trigger autofix.
 * 🚦 **Quality Hard Gates (`--fail-on`)**: Automatically block PR merges with non-zero exit codes when Critical or High vulnerabilities are detected, while gracefully uploading SARIF alerts.
 * 🛡️ **OASIS SARIF v2.1.0 & Native Step Summaries**: Export standardized SARIF for GitHub Code Scanning and publish Markdown executive summary tables directly to `$GITHUB_STEP_SUMMARY`.
-* 🤖 **Autonomous Remediation & Auto-PR**: Automatically synthesize language-aware security patches (parameterization, input sanitization), verify against regression test suites inside runner sandboxes, and open review Pull Requests.
-* ⚡ **Dual Caching Architecture**: Cache CLI binaries and the SQLite findings database (`~/.codemender/state.db`) to slash incremental scan times from ~45s to **< 10s** and eliminate redundant Gemini API token usage.
-* 🔒 **2-Tier Exploit Verification**: Fast Tier 1 semantic reachability checks (< 25s) for PR gatekeeping paired with Tier 2 sandboxed PoC exploit execution for scheduled sweeps.
+* 🤖 **Autonomous Remediation & Auto-PR**: Automatically synthesize language-aware security patches (parameterization, input sanitization), verify against regression test suites inside runner sandboxes, and open review Pull Requests (`create-pull-request@v8`).
+* 📦 **Artifact-Driven State Transfer (`cm report import`)**: Seamlessly hand off actionable findings between scanning and remediation jobs via JSON artifacts, eliminating fragile cross-runner SQLite database restoration.
 * 🌐 **Polyglot AST Support**: Works natively with JavaScript/TypeScript, Python, Go, Java, C/C++, C#, Rust, Kotlin, Ruby, and PHP without external plugins.
 
 ---
@@ -129,23 +129,22 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
   * **Standard Fast Mode (Default on PR / Push)**: Scans core application logic (controllers, routes, models) with 1-hop AST impact analysis in 3–5 minutes.
   * **Deep Scan Mode (`--deep`, CodeMender 0.10.0+)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Manually toggled on-demand via `workflow_dispatch (deep_scan: true)` when comprehensive coverage is required.
 * **Key Steps**:
-  1. Authenticates via WIF (`google-github-actions/auth@v2`).
-  2. Restores CLI binary and findings cache (`state.db`).
-  3. Executes autonomous scan (`cm find . -y --unrestricted --model gemini-3.8-flash` with optional `--deep`).
-  4. Generates and normalizes OASIS SARIF v2.1.0 (`cm report -f sarif`).
-  5. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
-  6. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.
+  1. Authenticates via WIF (`google-github-actions/auth@v2`) and configures `.git/info/exclude`.
+  2. Executes autonomous scan (`cm find . --diff="origin/$BASE_REF" --diff-workers=16 --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning` with optional `--deep`).
+  3. Generates and normalizes OASIS SARIF v2.1.0 and exports `codemender-findings.json` artifact (filtering out `[LEGACY / UNTOUCHED]`).
+  4. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
+  5. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.
 
 ### 2. `codemender-remediate.yml` (Autonomous Patch Remediation for Public Repositories)
 * **Target Audience**: Public & Open-Source Repositories (Responsible Disclosure Mode).
 * **Trigger**: Nightly scheduled runs (`0 3 * * *`) or manual dispatch (`workflow_dispatch`) with optional finding ID target.
 * **Key Features**:
   1. Clones repository with full Git history (`fetch-depth: 0`).
-  2. Queries open vulnerabilities from local findings database (or targets specific finding ID).
-  3. Synthesizes security patches via `cm fix <id> -y --bypass-warning --unrestricted --model gemini-3.8-flash`.
-  4. Purges internal `.cm_project` and temporary metadata to ensure zero repository pollution.
+  2. Resumes instantly without re-scanning by importing `codemender-findings.json` (`cm report import -f ...`).
+  3. Synthesizes security patches via `cm fix <id> --sandbox=false --yes --bypass-warning < /dev/null`.
+  4. Purges internal `.cm_project` and temporary metadata via `.git/info/exclude` to ensure zero repository pollution.
   5. Generates dynamic, context-aware PR title (`🛡️ [CodeMender] Fix: <Title>` or `🛡️ [CodeMender] Fix Finding <ID>`).
-  6. Submits automated, review-ready Pull Request (`peter-evans/create-pull-request@v6`) linking to GitHub Code Scanning SARIF alerts without exposing raw attack vectors publicly.
+  6. Submits automated, review-ready Pull Request (`peter-evans/create-pull-request@v8`) linking to GitHub Code Scanning SARIF alerts without exposing raw attack vectors publicly.
 
 ### 3. `codemender-remediate-private-repo.yml` (Autonomous Patch Remediation for Private Repositories)
 * **Target Audience**: Private Repositories & Enterprise Organizations (Full Audit Evidence Mode).
@@ -164,8 +163,8 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
    * Scanning job strictly uses `contents: read`, `id-token: write`, and `security-events: write`.
    * Remediation job uses `contents: write`, `id-token: write`, and `pull-requests: write`.
 2. **Untrusted Fork PR Guardrail**:
-   * Do not pass `--unrestricted` on untrusted external fork Pull Requests.
-   * Prefer `pull_request` over `pull_request_target` to prevent unauthorized Service Account impersonation.
+   * Restrict WIF token issuance with attribute condition: `assertion.repository == '${GITHUB_ORG}/${GITHUB_REPO}'`.
+   * GitHub Actions automatically suppresses OIDC tokens on untrusted external fork Pull Requests, preventing unauthorized Service Account impersonation or Gemini API abuse.
 3. **Concurrency Controls**:
    * Both workflows include `concurrency: group: ${{ github.workflow }}-${{ github.ref }}, cancel-in-progress: true` to prevent redundant runner billing and branch merge collisions.
 

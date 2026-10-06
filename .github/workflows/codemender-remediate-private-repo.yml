@@ -48,6 +48,8 @@ jobs:
           # Immediately purge temporary credential file from Git workspace to prevent accidental commit
           rm -f "${GOOGLE_APPLICATION_CREDENTIALS}"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> $GITHUB_ENV
+          mkdir -p .git/info
+          printf '%s\n' .cm_project 'gha-creds-*.json' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
@@ -81,6 +83,13 @@ jobs:
           restore-keys: |
             cm-state-${{ runner.os }}-${{ github.ref_name }}-
 
+      - name: Download Findings Artifact (if available)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: codemender-findings
+          path: /tmp/codemender-artifact
+
       - name: Initialize & Verify CodeMender Workspace
         run: |
           cm init
@@ -89,32 +98,39 @@ jobs:
       - name: Execute Autonomous Patch Remediation (Cache-First)
         run: |
           mkdir -p /tmp/codemender-evidence
+
+          # 0. Import findings artifact if present
+          if [ -f /tmp/codemender-artifact/codemender-findings.json ]; then
+            echo "📥 Importing findings from workflow artifact (codemender-findings.json)..."
+            cm report import -f /tmp/codemender-artifact/codemender-findings.json || true
+          fi
+
           SPECIFIC_TARGET="${{ github.event.inputs.finding_id }}"
           if [ -n "$SPECIFIC_TARGET" ]; then
             echo "🎯 Targeted Remediation: Evaluating Finding ID ${SPECIFIC_TARGET}..."
             if ! cm report -f json 2>/dev/null | jq -e ".[] | select((.finding_id == \"${SPECIFIC_TARGET}\") or (.id == \"${SPECIFIC_TARGET}\") or ((.finding_id // \"\") | startswith(\"${SPECIFIC_TARGET}\")))" >/dev/null 2>&1; then
-              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache. Running fallback discovery scan..."
-              cm find . -y --unrestricted --model gemini-3.8-flash
+              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache/artifact. Running fallback discovery scan..."
+              cm find . --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning
             else
-              echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache."
+              echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache/artifact."
             fi
 
             echo "🔬 Generating exploit PoC & verification evidence for Finding: ${SPECIFIC_TARGET}..."
-            cm verify "${SPECIFIC_TARGET}" --no-reset --bypass-warning --unrestricted -y || true
+            cm verify "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
 
             echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
-            cm fix "${SPECIFIC_TARGET}" -y --bypass-warning --unrestricted --model gemini-3.8-flash
+            cm fix "${SPECIFIC_TARGET}" --sandbox=false --yes --bypass-warning < /dev/null
           else
             echo "🔍 Batch Remediation Mode: Querying open CRITICAL and HIGH findings from CodeMender cache..."
             FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
 
             if [ -z "$FINDING_IDS" ]; then
-              echo "ℹ️ No prior Critical/High findings found in cache. Running fallback discovery scan..."
-              cm find . -y --unrestricted --model gemini-3.8-flash
+              echo "ℹ️ No prior Critical/High findings found in cache/artifact. Running fallback discovery scan..."
+              cm find . --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning
               FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
             else
               COUNT=$(echo "$FINDING_IDS" | wc -w | tr -d ' ')
-              echo "⚡ Restored ${COUNT} actionable CRITICAL/HIGH findings from cache."
+              echo "⚡ Restored ${COUNT} actionable CRITICAL/HIGH findings from cache/artifact."
             fi
 
             if [ -z "$FINDING_IDS" ]; then
@@ -124,11 +140,11 @@ jobs:
                 echo "=============================================="
                 echo "  Verifying & Synthesizing PoC for: ${FID}"
                 echo "=============================================="
-                cm verify "${FID}" --no-reset --bypass-warning --unrestricted -y || true
+                cm verify "${FID}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
                 echo "=============================================="
                 echo "  Applying autonomous patch for Finding: ${FID}"
                 echo "=============================================="
-                cm fix "${FID}" -y --bypass-warning --unrestricted --model gemini-3.8-flash --no-cache || true
+                cm fix "${FID}" --sandbox=false --yes --bypass-warning < /dev/null || true
               done
             fi
           fi
@@ -336,7 +352,7 @@ jobs:
 
       - name: Create Automated Remediation Pull Request
         if: steps.git_status.outputs.has_changes == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: 'fix(security): autonomous remediation patches synthesized by CodeMender'

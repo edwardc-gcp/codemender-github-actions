@@ -59,6 +59,8 @@ jobs:
           # Immediately purge temporary credential file from Git workspace to prevent accidental commit
           rm -f "${GOOGLE_APPLICATION_CREDENTIALS}"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> $GITHUB_ENV
+          mkdir -p .git/info
+          printf '%s\n' .cm_project 'gha-creds-*.json' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
@@ -108,10 +110,22 @@ jobs:
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "🔍 Pull Request detected: Running differential AST scan against origin/${{ github.base_ref }} (with 1-hop impact analysis)..."
-            cm find --diff="origin/${{ github.base_ref }}" -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH" ${EXTRA_FLAGS}
+            cm find . \
+              --diff="origin/${{ github.base_ref }}" \
+              --diff-workers=16 \
+              --fail-on="CRITICAL,HIGH" \
+              --sandbox=false \
+              --yes \
+              --bypass-warning \
+              ${EXTRA_FLAGS}
           else
             echo "🛡️ Push or Scheduled Audit detected: Running codebase security scan..."
-            cm find . -y --unrestricted --model gemini-3.8-flash --fail-on="CRITICAL,HIGH" ${EXTRA_FLAGS}
+            cm find . \
+              --fail-on="CRITICAL,HIGH" \
+              --sandbox=false \
+              --yes \
+              --bypass-warning \
+              ${EXTRA_FLAGS}
           fi
 
       - name: Export Security Reports & Publish Job Summary
@@ -119,6 +133,10 @@ jobs:
         run: |
           echo "Exporting structured CodeMender findings in JSON format..."
           cm report -f json > results.json
+
+          # Export actionable findings (filtering out resolved and [LEGACY / UNTOUCHED] technical debt)
+          mkdir -p "$RUNNER_TEMP/codemender"
+          jq '[.[] | select(.status != "RESOLVED" and .status != "FIXED" and ((.title // "") | contains("[LEGACY / UNTOUCHED]") | not))]' results.json > "$RUNNER_TEMP/codemender/codemender-findings.json" 2>/dev/null || cp results.json "$RUNNER_TEMP/codemender/codemender-findings.json"
 
           # WORKAROUND: Generate GitHub-optimized SARIF v2.1.0 from structured JSON
           # In CodeMender Pre-GA / Public Preview, native SARIF export (cm report -f sarif) omits rule
@@ -274,6 +292,14 @@ jobs:
 
           echo "SARIF Report generated successfully. Previewing findings:"
           head -n 25 results.sarif
+
+      - name: Upload Findings Artifact for Autonomous Remediation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-findings
+          path: ${{ runner.temp }}/codemender/codemender-findings.json
+          retention-days: 7
 
       - name: Upload SARIF Report to GitHub Code Scanning
         if: always()
