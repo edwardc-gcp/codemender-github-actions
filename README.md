@@ -127,11 +127,11 @@ gcloud iam workload-identity-pools providers describe ${PROVIDER_NAME} \
 * **Trigger**: Pull requests and pushes targeting `main` / `master`, scheduled weekly audits, and manual dispatch.
 * **Scan Modes**:
   * **Standard Fast Mode (Default on PR / Push)**: Scans core application logic (controllers, routes, models) with 1-hop AST impact analysis in 3–5 minutes.
-  * **Deep Scan Mode (`--deep`, CodeMender 0.10.0+)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Manually toggled on-demand via `workflow_dispatch (deep_scan: true)` when comprehensive coverage is required.
+  * **Deep Scan Mode (`--deep`)**: Broadens AST analysis across all supported auxiliary code files, database migrations (`migrations/*.sql`), devops scripts, and tooling. Manually toggled on-demand via `workflow_dispatch (deep_scan: true)` when comprehensive coverage is required.
 * **Key Steps**:
   1. Authenticates via WIF (`google-github-actions/auth@v2`) and configures `.git/info/exclude`.
   2. Executes autonomous scan (`cm find . --diff="origin/$BASE_REF" --diff-workers=16 --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning` with optional `--deep`).
-  3. Generates and normalizes OASIS SARIF v2.1.0 and exports `codemender-findings.json` artifact (filtering out `[LEGACY / UNTOUCHED]`).
+  3. Exports native OASIS SARIF v2.1.0 (`cm report -f sarif > results.sarif`) and `codemender-findings.json` artifact (filtering out `[LEGACY / UNTOUCHED]`).
   4. Publishes formatted Markdown table to `$GITHUB_STEP_SUMMARY`.
   5. Ingests findings into GitHub Code Scanning via `github/codeql-action/upload-sarif@v4`.
 
