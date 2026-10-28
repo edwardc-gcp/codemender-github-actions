@@ -19,6 +19,7 @@ jobs:
   autonomous-remediation:
     name: Synthesize Patches & Open Remediation PR (Private Repo)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     permissions:
       contents: write
@@ -34,6 +35,7 @@ jobs:
         with:
           # Full Git history (fetch-depth: 0) is required for cm vcs status and PR diff generation
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Authenticate to Google Cloud via WIF
         uses: google-github-actions/auth@v2
@@ -42,31 +44,37 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure ADC Credentials Outside Git Workspace
+        env:
+          SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT }}
         run: |
           mkdir -p "$HOME/.config/gcloud"
           cp "${GOOGLE_APPLICATION_CREDENTIALS}" "$HOME/.config/gcloud/application_default_credentials.json"
           # Immediately purge temporary credential file from Git workspace to prevent accidental commit
           rm -f "${GOOGLE_APPLICATION_CREDENTIALS}"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> $GITHUB_ENV
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> "$GITHUB_ENV"
+          DERIVED_PROJECT=$(printf '%s' "$SA_EMAIL" | sed -n 's/.*@\([^.]*\)\.iam\.gserviceaccount\.com/\1/p')
+          if [ -n "$DERIVED_PROJECT" ]; then
+            echo "GOOGLE_CLOUD_PROJECT=$DERIVED_PROJECT" >> "$GITHUB_ENV"
+          fi
           mkdir -p .git/info
-          printf '%s\n' .cm_project 'gha-creds-*.json' >> .git/info/exclude
+          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
           mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Cache CodeMender CLI Binary
         id: cache-cm
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.15.0
+          key: cm-binary-${{ runner.os }}-v0.16.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
         run: |
-          curl -L -o /tmp/cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm:stable:cm-linux-amd64.zip:download?alt=media"
+          curl -fsSL -o /tmp/cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm:stable:cm-linux-amd64.zip:download?alt=media"
           unzip -q -o /tmp/cm-linux-amd64.zip -d /tmp/cm-dist
           chmod +x /tmp/cm-dist/cm
           mv /tmp/cm-dist/cm "$HOME/.local/bin/cm"
@@ -90,10 +98,14 @@ jobs:
           name: codemender-findings
           path: /tmp/codemender-artifact
 
-      - name: Initialize & Verify CodeMender Workspace
+      - name: Initialize Workspace & Run Preflight Health Check
         run: |
           cm init
-          cm init --verify
+          # Pin project_paths to the repository root so cm fix always runs from workspace root
+          if ! grep -q '^project_paths:' "$HOME/.codemender/config.yaml" 2>/dev/null; then
+            printf '\nproject_paths:\n  - "%s"\n' "$GITHUB_WORKSPACE" >> "$HOME/.codemender/config.yaml"
+          fi
+          cm health --strict
 
       - name: Execute Autonomous Patch Remediation (Cache-First)
         run: |
@@ -109,24 +121,25 @@ jobs:
           if [ -n "$SPECIFIC_TARGET" ]; then
             echo "🎯 Targeted Remediation: Evaluating Finding ID ${SPECIFIC_TARGET}..."
             if ! cm report -f json 2>/dev/null | jq -e ".[] | select((.finding_id == \"${SPECIFIC_TARGET}\") or (.id == \"${SPECIFIC_TARGET}\") or ((.finding_id // \"\") | startswith(\"${SPECIFIC_TARGET}\")))" >/dev/null 2>&1; then
-              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache/artifact. Running fallback discovery scan..."
-              cm find . --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning
+              echo "⚠️ Target finding ${SPECIFIC_TARGET} not found in restored cache/artifact. Running rapid fallback discovery scan (--quick)..."
+              cm find . --quick --sandbox=false --yes --bypass-warning
             else
               echo "⚡ Target finding ${SPECIFIC_TARGET} verified in restored cache/artifact."
             fi
 
             echo "🔬 Generating exploit PoC & verification evidence for Finding: ${SPECIFIC_TARGET}..."
             cm verify "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
+            cp -r .exploit/* /tmp/codemender-evidence/ 2>/dev/null || true
 
             echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
-            cm fix "${SPECIFIC_TARGET}" --sandbox=false --yes --bypass-warning < /dev/null
+            cm fix "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null
           else
             echo "🔍 Batch Remediation Mode: Querying open CRITICAL and HIGH findings from CodeMender cache..."
             FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
 
             if [ -z "$FINDING_IDS" ]; then
-              echo "ℹ️ No prior Critical/High findings found in cache/artifact. Running fallback discovery scan..."
-              cm find . --fail-on="CRITICAL,HIGH" --sandbox=false --yes --bypass-warning
+              echo "ℹ️ No prior Critical/High findings found in cache/artifact. Running rapid fallback discovery scan (--quick)..."
+              cm find . --quick --sandbox=false --yes --bypass-warning
               FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
             else
               COUNT=$(echo "$FINDING_IDS" | wc -w | tr -d ' ')
@@ -141,10 +154,13 @@ jobs:
                 echo "  Verifying & Synthesizing PoC for: ${FID}"
                 echo "=============================================="
                 cm verify "${FID}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
+                mkdir -p "/tmp/codemender-evidence/${FID}"
+                cp -r .exploit/* "/tmp/codemender-evidence/${FID}/" 2>/dev/null || true
+                cp -r .exploit/* /tmp/codemender-evidence/ 2>/dev/null || true
                 echo "=============================================="
                 echo "  Applying autonomous patch for Finding: ${FID}"
                 echo "=============================================="
-                cm fix "${FID}" --sandbox=false --yes --bypass-warning < /dev/null || true
+                cm fix "${FID}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
               done
             fi
           fi
@@ -163,12 +179,12 @@ jobs:
         id: git_status
         run: |
           # 1. Restore any tracked project .gitignore files in case they were modified
-          git checkout HEAD -- '**/.gitignore' 2>/dev/null || true
+          git ls-files '.gitignore' '*.gitignore' '**/.*gitignore' 2>/dev/null | xargs -r git checkout HEAD -- 2>/dev/null || true
 
-          # 2. Purge internal CodeMender runtime tracking files and untracked .gitignore
+          # 2. Purge internal CodeMender runtime tracking files and any untracked .gitignore created by cm
           find . -name ".cm_project" -delete 2>/dev/null || true
           find . -name ".cm_*" -delete 2>/dev/null || true
-          find . -name ".gitignore" -exec grep -lE "(\.cm_project|PLAN\.md|\.exploit)" {} + 2>/dev/null | xargs rm -f 2>/dev/null || true
+          git ls-files --others --exclude-standard | grep -E '(^|/)\.gitignore$' | xargs -r rm -f 2>/dev/null || true
 
           # 3. Purge all .exploit directories and verification files from working tree!
           # DO NOT commit exploit scripts, logs, or plans to the production repository!

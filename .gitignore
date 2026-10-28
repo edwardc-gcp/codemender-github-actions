@@ -1,4 +1,6 @@
-# Local CodeMender findings and state database (persisted via actions/cache in CI)
+# Local CodeMender findings, project marker, and verification artifacts
+.cm_project
+.exploit/
 .codemender/state.db
 .codemender/reports/
 *.sarif

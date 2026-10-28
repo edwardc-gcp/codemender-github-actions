@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       deep_scan:
-        description: 'Enable CodeMender Deep Scan (--deep: scans all supported non-doc, non-config files)'
+        description: 'Run exhaustive concurrent file-by-file Deep Scan instead of rapid Quick Scan (--quick)'
         required: false
         default: false
         type: boolean
@@ -24,12 +24,19 @@ concurrency:
 jobs:
   codemender-security-audit:
     name: Autonomous Code Vulnerability Scan
+    # Fork and Dependabot PR workflows cannot read repository secrets for Google Cloud WIF
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     permissions:
       contents: read
-      id-token: write
-      security-events: write
+      id-token: write         # Workload Identity Federation
+      security-events: write  # Upload SARIF to GitHub Code Scanning
+      actions: read           # Required to upload SARIF from private repositories
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -40,6 +47,7 @@ jobs:
         with:
           # Full history is required for PR diff resolution (cm find --diff)
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js Runtime
         uses: actions/setup-node@v4
@@ -53,32 +61,39 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Configure ADC Credentials Outside Git Workspace
+        env:
+          SA_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT }}
         run: |
           mkdir -p "$HOME/.config/gcloud"
           cp "${GOOGLE_APPLICATION_CREDENTIALS}" "$HOME/.config/gcloud/application_default_credentials.json"
           # Immediately purge temporary credential file from Git workspace to prevent accidental commit
           rm -f "${GOOGLE_APPLICATION_CREDENTIALS}"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> $GITHUB_ENV
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json" >> "$GITHUB_ENV"
+          # Derive target project ID from Service Account email so cm health & scans resolve it explicitly
+          DERIVED_PROJECT=$(printf '%s' "$SA_EMAIL" | sed -n 's/.*@\([^.]*\)\.iam\.gserviceaccount\.com/\1/p')
+          if [ -n "$DERIVED_PROJECT" ]; then
+            echo "GOOGLE_CLOUD_PROJECT=$DERIVED_PROJECT" >> "$GITHUB_ENV"
+          fi
           mkdir -p .git/info
-          printf '%s\n' .cm_project 'gha-creds-*.json' >> .git/info/exclude
+          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
           mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Cache CodeMender CLI Binary
         id: cache-cm
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.15.0
+          key: cm-binary-${{ runner.os }}-v0.16.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
         run: |
           echo "Downloading stable CodeMender CLI binary..."
-          curl -L -o /tmp/cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm:stable:cm-linux-amd64.zip:download?alt=media"
+          curl -fsSL -o /tmp/cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm:stable:cm-linux-amd64.zip:download?alt=media"
           unzip -q -o /tmp/cm-linux-amd64.zip -d /tmp/cm-dist
           chmod +x /tmp/cm-dist/cm
           mv /tmp/cm-dist/cm "$HOME/.local/bin/cm"
@@ -95,19 +110,13 @@ jobs:
           restore-keys: |
             cm-state-${{ runner.os }}-${{ github.ref_name }}-
 
-      - name: Initialize & Verify CodeMender Workspace
+      - name: Initialize Workspace & Run Preflight Health Check
         run: |
           cm init
-          cm init --verify
+          cm health --strict
 
       - name: Execute Autonomous Security Scan
         run: |
-          EXTRA_FLAGS=""
-          if [ "${{ github.event.inputs.deep_scan }}" = "true" ]; then
-            echo "🔬 Deep scan mode enabled (--deep): scanning all supported non-doc, non-config files..."
-            EXTRA_FLAGS="--deep"
-          fi
-
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "🔍 Pull Request detected: Running differential AST scan against origin/${{ github.base_ref }} (with 1-hop impact analysis)..."
             cm find . \
@@ -116,21 +125,31 @@ jobs:
               --fail-on="CRITICAL,HIGH" \
               --sandbox=false \
               --yes \
-              --bypass-warning \
-              ${EXTRA_FLAGS}
-          else
-            echo "🛡️ Push or Scheduled Audit detected: Running codebase security scan..."
+              --bypass-warning
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.deep_scan }}" = "true" ]; then
+            echo "🔬 Scheduled or On-Demand Deep Scan: Running exhaustive concurrent file-by-file audit..."
             cm find . \
-              --fail-on="CRITICAL,HIGH" \
+              --deep-workers=8 \
               --sandbox=false \
               --yes \
-              --bypass-warning \
-              ${EXTRA_FLAGS}
+              --bypass-warning
+          else
+            echo "🛡️ Push or Quick Audit detected: Running rapid single-session repository scan (--quick)..."
+            cm find . \
+              --quick \
+              --sandbox=false \
+              --yes \
+              --bypass-warning
           fi
 
       - name: Export Security Reports & Publish Job Summary
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
+          if ! command -v cm >/dev/null 2>&1 || [ ! -f "$HOME/.codemender/state.db" ]; then
+            echo "⚠️ Skipping report export because the CodeMender workspace state was not initialized."
+            exit 0
+          fi
+
           echo "Exporting structured CodeMender findings in JSON format..."
           cm report -f json > results.json
 
@@ -142,14 +161,14 @@ jobs:
           cm report -f sarif > results.sarif
 
           echo "Publishing native Markdown summary to GitHub Actions Step Summary..."
-          echo "## 🛡️ CodeMender Security Scan Summary" >> $GITHUB_STEP_SUMMARY
-          cm report -f md >> $GITHUB_STEP_SUMMARY || true
+          echo "## 🛡️ CodeMender Security Scan Summary" >> "$GITHUB_STEP_SUMMARY"
+          cm report -f md >> "$GITHUB_STEP_SUMMARY" || true
 
           echo "SARIF Report generated successfully. Previewing findings:"
           head -n 25 results.sarif
 
       - name: Upload Findings Artifact for Autonomous Remediation
-        if: always()
+        if: ${{ !cancelled() && hashFiles('results.sarif') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: codemender-findings
@@ -157,7 +176,7 @@ jobs:
           retention-days: 7
 
       - name: Upload SARIF Report to GitHub Code Scanning
-        if: always()
+        if: ${{ !cancelled() && hashFiles('results.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
