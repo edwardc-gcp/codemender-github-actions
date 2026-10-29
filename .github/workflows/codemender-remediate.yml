@@ -58,7 +58,7 @@ jobs:
             echo "GOOGLE_CLOUD_PROJECT=$DERIVED_PROJECT" >> "$GITHUB_ENV"
           fi
           mkdir -p .git/info
-          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' >> .git/info/exclude
+          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' 'cm-support-bundle-*.tar.gz' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.16.0
+          key: cm-binary-${{ runner.os }}-v0.17.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
@@ -165,7 +165,7 @@ jobs:
 
           # 3. Purge sensitive exploit artifacts in public repos for responsible disclosure
           find . -type d -name ".exploit" -prune -exec rm -rf {} + 2>/dev/null || true
-          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" \) -delete 2>/dev/null || true
+          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" -o -name "cm-support-bundle-*.tar.gz" \) -delete 2>/dev/null || true
           rm -rf .exploit codemender-evidence 2>/dev/null || true
 
           echo "=== CodeMender VCS Status ==="

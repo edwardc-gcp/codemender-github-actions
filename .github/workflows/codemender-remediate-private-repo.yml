@@ -57,7 +57,7 @@ jobs:
             echo "GOOGLE_CLOUD_PROJECT=$DERIVED_PROJECT" >> "$GITHUB_ENV"
           fi
           mkdir -p .git/info
-          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' >> .git/info/exclude
+          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' 'cm-support-bundle-*.tar.gz' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
@@ -69,7 +69,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.16.0
+          key: cm-binary-${{ runner.os }}-v0.17.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
@@ -131,8 +131,13 @@ jobs:
             cm verify "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null || true
             cp -r .exploit/* /tmp/codemender-evidence/ 2>/dev/null || true
 
-            echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
-            cm fix "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null
+            VERIFIED_STATUS=$(cm report -f json 2>/dev/null | jq -r ".[] | select((.finding_id == \"${SPECIFIC_TARGET}\") or (.id == \"${SPECIFIC_TARGET}\") or ((.finding_id // \"\") | startswith(\"${SPECIFIC_TARGET}\"))) | .status" 2>/dev/null | head -n 1 || echo "")
+            if [ "$VERIFIED_STATUS" = "DISMISSED" ]; then
+              echo "ℹ️ Finding ${SPECIFIC_TARGET} was marked DISMISSED (unexploitable) by cm verify; skipping patch synthesis."
+            else
+              echo "Applying autonomous patch for Finding: ${SPECIFIC_TARGET}"
+              cm fix "${SPECIFIC_TARGET}" --no-reset --sandbox=false --yes --bypass-warning < /dev/null
+            fi
           else
             echo "🔍 Batch Remediation Mode: Querying open CRITICAL and HIGH findings from CodeMender cache..."
             FINDING_IDS=$(cm report -f json 2>/dev/null | jq -r '.[] | select((.status == "OPEN" or .status == "REOPENED" or .status == null) and (.severity == "CRITICAL" or .severity == "HIGH")) | (.finding_id // .id)' 2>/dev/null || echo "")
@@ -157,6 +162,13 @@ jobs:
                 mkdir -p "/tmp/codemender-evidence/${FID}"
                 cp -r .exploit/* "/tmp/codemender-evidence/${FID}/" 2>/dev/null || true
                 cp -r .exploit/* /tmp/codemender-evidence/ 2>/dev/null || true
+
+                VERIFIED_STATUS=$(cm report -f json 2>/dev/null | jq -r ".[] | select((.finding_id == \"${FID}\") or (.id == \"${FID}\") or ((.finding_id // \"\") | startswith(\"${FID}\"))) | .status" 2>/dev/null | head -n 1 || echo "")
+                if [ "$VERIFIED_STATUS" = "DISMISSED" ]; then
+                  echo "ℹ️ Finding ${FID} was marked DISMISSED (unexploitable) by cm verify; skipping patch synthesis."
+                  continue
+                fi
+
                 echo "=============================================="
                 echo "  Applying autonomous patch for Finding: ${FID}"
                 echo "=============================================="
@@ -189,7 +201,7 @@ jobs:
           # 3. Purge all .exploit directories and verification files from working tree!
           # DO NOT commit exploit scripts, logs, or plans to the production repository!
           find . -type d -name ".exploit" -prune -exec rm -rf {} + 2>/dev/null || true
-          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" \) -delete 2>/dev/null || true
+          find . -type f \( -name "PLAN.md" -o -name "LOG.md" -o -name "exploit.sh" -o -name "REPORT.md" -o -name "poc.*" -o -name "cm-support-bundle-*.tar.gz" \) -delete 2>/dev/null || true
           rm -rf codemender-evidence 2>/dev/null || true
 
           echo "=== CodeMender VCS Status ==="
@@ -251,7 +263,8 @@ jobs:
               remediated_count = 0
               for f in findings:
                   sev = f.get("severity", "").upper()
-                  if sev in ("CRITICAL", "HIGH"):
+                  status = (f.get("status") or "").upper()
+                  if sev in ("CRITICAL", "HIGH") and status != "DISMISSED":
                       fid = f.get("finding_id", f.get("id", "Unknown"))
                       title = f.get("title", f.get("headline", "Security Vulnerability"))
                       cat = f.get("vuln_id") or f.get("category") or f.get("cwe") or "CWE-Security"

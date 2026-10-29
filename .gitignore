@@ -3,6 +3,7 @@
 .exploit/
 .codemender/state.db
 .codemender/reports/
+cm-support-bundle-*.tar.gz
 *.sarif
 *.html
 *.log

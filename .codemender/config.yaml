@@ -10,6 +10,7 @@ scan:
 
 output:
   format: table   # "table", "json", "sarif", "md", "html"
+  plain: false    # Set true (or CM_PLAIN=true) for pure-ASCII CI logs without emojis or ANSI colors
 
 tools:
   confirm_commands: false   # Disables interactive confirmation prompts in headless CI runners

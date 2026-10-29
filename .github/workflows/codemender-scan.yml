@@ -75,7 +75,7 @@ jobs:
             echo "GOOGLE_CLOUD_PROJECT=$DERIVED_PROJECT" >> "$GITHUB_ENV"
           fi
           mkdir -p .git/info
-          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' >> .git/info/exclude
+          printf '%s\n' .cm_project .exploit/ 'gha-creds-*.json' 'cm-support-bundle-*.tar.gz' >> .git/info/exclude
 
       - name: Add local bin to PATH
         run: |
@@ -87,7 +87,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/cm
-          key: cm-binary-${{ runner.os }}-v0.16.0
+          key: cm-binary-${{ runner.os }}-v0.17.0
 
       - name: Download & Install CodeMender CLI
         if: steps.cache-cm.outputs.cache-hit != 'true'
@@ -116,7 +116,9 @@ jobs:
           cm health --strict
 
       - name: Execute Autonomous Security Scan
+        id: scan
         run: |
+          status=0
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "🔍 Pull Request detected: Running differential AST scan against origin/${{ github.base_ref }} (with 1-hop impact analysis)..."
             cm find . \
@@ -125,25 +127,34 @@ jobs:
               --fail-on="CRITICAL,HIGH" \
               --sandbox=false \
               --yes \
-              --bypass-warning
+              --bypass-warning || status=$?
           elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.deep_scan }}" = "true" ]; then
             echo "🔬 Scheduled or On-Demand Deep Scan: Running exhaustive concurrent file-by-file audit..."
             cm find . \
               --deep-workers=8 \
               --sandbox=false \
               --yes \
-              --bypass-warning
+              --bypass-warning || status=$?
           else
             echo "🛡️ Push or Quick Audit detected: Running rapid single-session repository scan (--quick)..."
             cm find . \
               --quick \
               --sandbox=false \
               --yes \
-              --bypass-warning
+              --bypass-warning || status=$?
           fi
 
+          # Dedicated exit codes (10/20/30/40/60) indicate setup, auth, reachability, or capacity errors rather than completed scans.
+          if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+            echo "completed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ Scan aborted with setup/service exit code ${status}; skipping SARIF export to preserve existing alerts."
+            echo "completed=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
+
       - name: Export Security Reports & Publish Job Summary
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scan.outputs.completed == 'true' }}
         run: |
           if ! command -v cm >/dev/null 2>&1 || [ ! -f "$HOME/.codemender/state.db" ]; then
             echo "⚠️ Skipping report export because the CodeMender workspace state was not initialized."
@@ -153,9 +164,9 @@ jobs:
           echo "Exporting structured CodeMender findings in JSON format..."
           cm report -f json > results.json
 
-          # Export actionable findings (filtering out resolved and [LEGACY / UNTOUCHED] technical debt)
+          # Export actionable findings (filtering out resolved, dismissed, and [LEGACY / UNTOUCHED] technical debt)
           mkdir -p "$RUNNER_TEMP/codemender"
-          jq '[.[] | select(.status != "RESOLVED" and .status != "FIXED" and ((.title // "") | contains("[LEGACY / UNTOUCHED]") | not))]' results.json > "$RUNNER_TEMP/codemender/codemender-findings.json" 2>/dev/null || cp results.json "$RUNNER_TEMP/codemender/codemender-findings.json"
+          jq '[.[] | select(.status != "RESOLVED" and .status != "FIXED" and .status != "DISMISSED" and ((.title // "") | contains("[LEGACY / UNTOUCHED]") | not))]' results.json > "$RUNNER_TEMP/codemender/codemender-findings.json" 2>/dev/null || cp results.json "$RUNNER_TEMP/codemender/codemender-findings.json"
 
           echo "Exporting native OASIS SARIF v2.1.0 report for GitHub Code Scanning..."
           cm report -f sarif > results.sarif
